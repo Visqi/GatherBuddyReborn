@@ -145,7 +145,7 @@ namespace GatherBuddy.AutoGather.Lists
         private bool NeedsGathering((IGatherable item, uint quantity) value)
         {
             var (item, quantity) = value;
-            return item.GetTotalCount() < quantity && CheckOvercap(item);
+            return item.GetTotalCount(_listsManager.UsesRetainerInventory(item)) < quantity && CheckOvercap(item);
         }
 
         private bool NeedsGathering(GatherTarget target)
@@ -617,6 +617,7 @@ namespace GatherBuddy.AutoGather.Lists
         /// </returns>
         private bool IsUpdateNeeded()
         {
+            var adjustedServerTime = AutoGather.AdjustedServerTime;
             var currentJob = Player.Job switch
             {
                 16 /* MIN */ => GatheringType.Miner,
@@ -627,7 +628,8 @@ namespace GatherBuddy.AutoGather.Lists
             
             if (_activeItemsChanged
                 || _forceUpdateUnconditionally
-                || _lastUpdateTime.TotalEorzeaHours() != AutoGather.AdjustedServerTime.TotalEorzeaHours()
+                || _lastUpdateTime.TotalEorzeaHours() != adjustedServerTime.TotalEorzeaHours()
+                || _gatherableItems.Any(x => x.Time.InRange(_lastUpdateTime) != x.Time.InRange(adjustedServerTime))
                 || _lastTerritoryId != Dalamud.ClientState.TerritoryType
                 || Diadem.IsInside && _lastWeatherId != EnhancedCurrentWeather.GetCurrentWeatherId()
                 || _lastJob != currentJob)

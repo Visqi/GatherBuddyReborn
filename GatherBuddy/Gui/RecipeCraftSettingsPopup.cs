@@ -215,6 +215,7 @@ public class RecipeCraftSettingsPopup
         if (!_isOpen) return;
         
         ImGui.SetNextWindowSize(VulcanUiScaling.Scaled(450f, 450f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSizeConstraints(VulcanUiScaling.Scaled(450f, 0f), new Vector2(float.MaxValue, float.MaxValue));
         
         if (ImGui.Begin($"Craft Settings - {_recipeName}###RecipeCraftSettings_{_instanceId}", ref _isOpen))
         {
