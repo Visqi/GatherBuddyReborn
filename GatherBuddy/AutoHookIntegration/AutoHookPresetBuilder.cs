@@ -13,6 +13,15 @@ namespace GatherBuddy.AutoHookIntegration;
 
 public class AutoHookPresetBuilder
 {
+    private enum MultiHookAction
+    {
+        None,
+        Double,
+        Triple,
+    }
+
+    private readonly record struct MultiHookConfig(MultiHookAction Action, int Threshold, bool ThresholdAbove);
+
     private const uint VersatileLureId = 29717;
     private const uint AmbitiousLureId = 37594;
     private const uint ModestLureId = 37595;
@@ -36,6 +45,34 @@ public class AutoHookPresetBuilder
         var config = selector(gbrPreset.FishingActions);
         return (config.Enabled, config.GpThreshold, config.GpThresholdAbove);
     }
+
+    private static MultiHookConfig GetMultiHookConfig(ConfigPreset gbrPreset, Fish[] fishArray)
+    {
+        var doubleHook = gbrPreset.FishingActions.DoubleHook;
+        var tripleHook = gbrPreset.FishingActions.TripleHook;
+        if (doubleHook.Enabled && tripleHook.Enabled)
+        {
+            GatherBuddy.Log.Warning($"[AutoHook] Preset '{gbrPreset.Name}' enables both Double Hook and Triple Hook; disabling multi-hook generation.");
+            return new(MultiHookAction.None, 0, true);
+        }
+
+        if (fishArray.Any(IsMultiHookIneligible))
+            return new(MultiHookAction.None, 0, true);
+
+        if (doubleHook.Enabled)
+            return new(MultiHookAction.Double, doubleHook.GpThreshold, doubleHook.GpThresholdAbove);
+
+        if (tripleHook.Enabled)
+            return new(MultiHookAction.Triple, tripleHook.GpThreshold, tripleHook.GpThresholdAbove);
+
+        return new(MultiHookAction.None, 0, true);
+    }
+
+    private static bool IsMultiHookIneligible(Fish fish)
+        => fish.Mooches.Length > 0
+            || fish.ItemData.IsCollectable
+            || fish.Predators.Any(predator => !predator.Item1.IsSpearFish
+                && (predator.Item1.Mooches.Length > 0 || predator.Item1.ItemData.IsCollectable));
 
     private static (int Threshold, bool ThresholdAbove) GetFishingActionThreshold(ConfigPreset? gbrPreset,
         Func<ConfigPreset.FishingActionsRec, ConfigPreset.FishingActionConfig> selector, int fallbackThreshold,
@@ -183,6 +220,7 @@ public class AutoHookPresetBuilder
     {
         var fishArray = fishList.ToArray();
         var presets = new List<AHCustomPresetConfig>();
+        MultiHookConfig? multiHookConfig = gbrPreset == null ? null : GetMultiHookConfig(gbrPreset, fishArray);
         
         var hasIntuitionFish = fishArray.Any(f => f.Predators.Length > 0 && f.Predators.All(p => !p.Item1.IsSpearFish));
         
@@ -193,15 +231,18 @@ public class AutoHookPresetBuilder
             var predatorPresetName = $"{presetName}_Predators";
             var targetPresetName = $"{presetName}_Target";
             
-            var predatorPreset = BuildPredatorPreset(predatorPresetName, targetPresetName, fishArray, gbrPreset);
+            var predatorPreset = BuildPredatorPreset(predatorPresetName, targetPresetName, fishArray, gbrPreset, multiHookConfig);
             presets.Add(predatorPreset);
             
-            var targetPreset = BuildTargetPreset(targetPresetName, predatorPresetName, fishArray, gbrPreset);
+            MultiHookConfig? targetMultiHookConfig = multiHookConfig == null
+                ? null
+                : new MultiHookConfig(MultiHookAction.None, 0, true);
+            var targetPreset = BuildTargetPreset(targetPresetName, predatorPresetName, fishArray, gbrPreset, targetMultiHookConfig);
             presets.Add(targetPreset);
         }
         else
         {
-            var preset = BuildSinglePreset(presetName, fishArray, gbrPreset);
+            var preset = BuildSinglePreset(presetName, fishArray, gbrPreset, multiHookConfig);
             presets.Add(preset);
         }
         
@@ -214,7 +255,7 @@ public class AutoHookPresetBuilder
         return presets[0];
     }
     
-    private static AHCustomPresetConfig BuildPredatorPreset(string presetName, string targetPresetName, Fish[] targetFish, ConfigPreset? gbrPreset)
+    private static AHCustomPresetConfig BuildPredatorPreset(string presetName, string targetPresetName, Fish[] targetFish, ConfigPreset? gbrPreset, MultiHookConfig? multiHookConfig)
     {
         var preset = new AHCustomPresetConfig(presetName);
         
@@ -268,7 +309,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig);
             }
             
             preset.ListOfBaits.Add(hookConfig);
@@ -282,7 +323,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset, configureLures: false);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig, configureLures: false);
             }
             
             preset.ListOfMooch.Add(hookConfig);
@@ -315,7 +356,7 @@ public class AutoHookPresetBuilder
         return preset;
     }
     
-    private static AHCustomPresetConfig BuildTargetPreset(string presetName, string predatorPresetName, Fish[] targetFish, ConfigPreset? gbrPreset)
+    private static AHCustomPresetConfig BuildTargetPreset(string presetName, string predatorPresetName, Fish[] targetFish, ConfigPreset? gbrPreset, MultiHookConfig? multiHookConfig)
     {
         var preset = new AHCustomPresetConfig(presetName);
         
@@ -357,7 +398,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig);
             }
             preset.ListOfBaits.Add(hookConfig);
         }
@@ -370,7 +411,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset, configureLures: false);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig, configureLures: false);
             }
             preset.ListOfMooch.Add(hookConfig);
         }
@@ -390,7 +431,7 @@ public class AutoHookPresetBuilder
         return preset;
     }
     
-    private static AHCustomPresetConfig BuildSinglePreset(string presetName, Fish[] fishArray, ConfigPreset? gbrPreset)
+    private static AHCustomPresetConfig BuildSinglePreset(string presetName, Fish[] fishArray, ConfigPreset? gbrPreset, MultiHookConfig? multiHookConfig)
     {
         var preset = new AHCustomPresetConfig(presetName);
         
@@ -433,7 +474,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig);
             }
             
             preset.ListOfBaits.Add(hookConfig);
@@ -447,7 +488,7 @@ public class AutoHookPresetBuilder
             
             foreach (var fish in group)
             {
-                ConfigureHookForFish(hookConfig, fish, gbrPreset, configureLures: false);
+                ConfigureHookForFish(hookConfig, fish, gbrPreset, multiHookConfig, configureLures: false);
             }
             
             preset.ListOfMooch.Add(hookConfig);
@@ -489,7 +530,7 @@ public class AutoHookPresetBuilder
         return preset;
     }
 
-    private static void ConfigureHookForFish(AHHookConfig hookConfig, Fish fish, ConfigPreset? gbrPreset, bool configureLures = true)
+    private static void ConfigureHookForFish(AHHookConfig hookConfig, Fish fish, ConfigPreset? gbrPreset, MultiHookConfig? multiHookConfig, bool configureLures = true)
     {
         var ahBiteType = ConvertBiteType(fish.BiteType);
         var ahHookType = ConvertHookSet(fish.HookSet);
@@ -509,7 +550,7 @@ public class AutoHookPresetBuilder
         {
             ConfigureLures(hookConfig.NormalHook, fish.HookSet, gbrPreset, requiredLure);
         }
-        SetHookConfiguration(hookConfig.NormalHook, ahBiteType, ahHookType, minTime, maxTime);
+        SetHookConfiguration(hookConfig.NormalHook, ahBiteType, ahHookType, minTime, maxTime, multiHookConfig);
 
         if (fish.Predators.Length > 0)
         {
@@ -518,7 +559,7 @@ public class AutoHookPresetBuilder
             {
                 ConfigureLures(hookConfig.IntuitionHook, fish.HookSet, gbrPreset, requiredLure);
             }
-            SetHookConfiguration(hookConfig.IntuitionHook, ahBiteType, ahHookType, minTime, maxTime);
+            SetHookConfiguration(hookConfig.IntuitionHook, ahBiteType, ahHookType, minTime, maxTime, multiHookConfig);
         }
     }
 
@@ -548,9 +589,9 @@ public class AutoHookPresetBuilder
         AHBiteType biteType, 
         AHHookType hookType,
         double minTime = 0,
-        double maxTime = 0)
+        double maxTime = 0,
+        MultiHookConfig? multiHookConfig = null)
     {
-        // Get all three bite configs for this bite type (Patience, Double, Triple)
         var (patienceConfig, doubleConfig, tripleConfig) = biteType switch
         {
             AHBiteType.Weak => (hookset.PatienceWeak, hookset.DoubleWeak, hookset.TripleWeak),
@@ -559,16 +600,38 @@ public class AutoHookPresetBuilder
             _ => (null, null, null)
         };
 
-        if (patienceConfig == null) return;
+        if (patienceConfig == null)
+            return;
         
         patienceConfig.HooksetEnabled = true;
         patienceConfig.HooksetType = hookType;
-        
-        doubleConfig!.HooksetEnabled = true;
-        doubleConfig.HooksetType = hookType;
-        
-        tripleConfig!.HooksetEnabled = true;
-        tripleConfig.HooksetType = hookType;
+
+        AHBaseBiteConfig? multiHookBiteConfig = null;
+        if (multiHookConfig is { } configuredMultiHook)
+        {
+            hookset.UseDoubleHook = configuredMultiHook.Action == MultiHookAction.Double;
+            hookset.UseTripleHook = configuredMultiHook.Action == MultiHookAction.Triple;
+            multiHookBiteConfig = configuredMultiHook.Action switch
+            {
+                MultiHookAction.Double => doubleConfig,
+                MultiHookAction.Triple => tripleConfig,
+                _ => null,
+            };
+
+            if (multiHookBiteConfig != null)
+            {
+                multiHookBiteConfig.HooksetEnabled = true;
+                multiHookBiteConfig.HooksetType = configuredMultiHook.Action == MultiHookAction.Double ? AHHookType.Double : AHHookType.Triple;
+                multiHookBiteConfig.ConditionSet = CreateGpConditionSet(configuredMultiHook.Threshold, configuredMultiHook.ThresholdAbove);
+            }
+        }
+        else
+        {
+            doubleConfig!.HooksetEnabled = true;
+            doubleConfig.HooksetType = hookType;
+            tripleConfig!.HooksetEnabled = true;
+            tripleConfig.HooksetType = hookType;
+        }
 
         if (GatherBuddy.Config.AutoGatherConfig.UseHookTimers && (minTime > 0 || maxTime > 0))
         {
@@ -576,14 +639,43 @@ public class AutoHookPresetBuilder
             patienceConfig.MinHookTimer = minTime;
             patienceConfig.MaxHookTimer = maxTime;
             
-            doubleConfig.HookTimerEnabled = true;
-            doubleConfig.MinHookTimer = minTime;
-            doubleConfig.MaxHookTimer = maxTime;
-            
-            tripleConfig.HookTimerEnabled = true;
-            tripleConfig.MinHookTimer = minTime;
-            tripleConfig.MaxHookTimer = maxTime;
+            if (multiHookConfig == null)
+            {
+                doubleConfig!.HookTimerEnabled = true;
+                doubleConfig.MinHookTimer = minTime;
+                doubleConfig.MaxHookTimer = maxTime;
+                tripleConfig!.HookTimerEnabled = true;
+                tripleConfig.MinHookTimer = minTime;
+                tripleConfig.MaxHookTimer = maxTime;
+            }
+            else if (multiHookBiteConfig != null)
+            {
+                multiHookBiteConfig.HookTimerEnabled = true;
+                multiHookBiteConfig.MinHookTimer = minTime;
+                multiHookBiteConfig.MaxHookTimer = maxTime;
+            }
         }
+    }
+
+    private static AHConditionSet CreateGpConditionSet(int threshold, bool thresholdAbove)
+    {
+        return new()
+        {
+            Groups =
+            [
+                new()
+                {
+                    Conditions =
+                    [
+                        new("GpCD", new Dictionary<string, object>
+                        {
+                            ["val"] = threshold,
+                            ["op"] = thresholdAbove ? ">=" : "<=",
+                        }),
+                    ],
+                },
+            ],
+        };
     }
 
     private static AHBiteType ConvertBiteType(BiteType gbBiteType)
