@@ -448,7 +448,6 @@ public class AutoHookPresetBuilder
         }
         
         var moochChainFish = CollectAllFishInMoochChains(fishArray);
-        var surfaceSlapFish = allFishWithMooches.Where(f => !moochChainFish.Contains(f)).ToList();
         var fishWithBait = moochChainFish.Where(f => f.Mooches.Length == 0).ToList();
         var fishWithMooch = moochChainFish.Where(f => f.Mooches.Length > 0).ToList();
         
@@ -766,14 +765,14 @@ public class AutoHookPresetBuilder
     private static void AddFishConfig(AHCustomPresetConfig preset, Fish fish, Fish[] targetFishList, HashSet<Fish> allFish, ConfigPreset? gbrPreset)
     {
         bool isTargetFish = targetFishList.Any(f => f.ItemId == fish.ItemId);
-        if (isTargetFish)
-            return;
-        
         var targetFish = targetFishList.FirstOrDefault();
         if (targetFish == null)
         {
             return;
         }
+
+        var surfaceSlap = DetermineSurfaceSlap(fish, targetFishList, allFish, gbrPreset);
+        var identicalCast = DetermineIdenticalCast(fish, targetFishList, gbrPreset);
         
         var targetMoochChain = new HashSet<Fish>();
         var currentFish = targetFish;
@@ -798,10 +797,13 @@ public class AutoHookPresetBuilder
                           fish.BiteType != BiteType.Unknown && 
                           fish.BiteType != BiteType.None &&
                           !isPartOfTargetMoochChain &&
-                          !targetFishList.Any(f => f.ItemId == fish.ItemId);
+                          !isTargetFish;
         }
         
-        if (!isPartOfTargetMoochChain && !isSourceFish)
+        if (!isPartOfTargetMoochChain && !isSourceFish && !surfaceSlap.Enabled && !identicalCast.Enabled)
+            return;
+
+        if (preset.ListOfFish.Any(config => config.Fish.Id == (int)fish.ItemId))
             return;
         
         AHAutoMooch? mooch = null;
@@ -809,9 +811,6 @@ public class AutoHookPresetBuilder
         {
             mooch = new AHAutoMooch(fish.ItemId);
         }
-        
-        var surfaceSlap = DetermineSurfaceSlap(fish, targetFishList, allFish, gbrPreset);
-        var identicalCast = DetermineIdenticalCast(fish, targetFishList, gbrPreset);
         
         var fishConfig = new AHFishConfig((int)fish.ItemId)
         {
@@ -827,16 +826,21 @@ public class AutoHookPresetBuilder
     
     private static AHAutoSurfaceSlap DetermineSurfaceSlap(Fish fish, Fish[] targetFishList, HashSet<Fish> allFish, ConfigPreset? gbrPreset)
     {
+        bool isTargetFish = targetFishList.Any(f => f.ItemId == fish.ItemId);
+        if (isTargetFish)
+            return new AHAutoSurfaceSlap(false);
+
         if (fish.SurfaceSlap != null)
-            return new AHAutoSurfaceSlap(true);
+        {
+            return new AHAutoSurfaceSlap(true)
+            {
+                ConditionSet = CreateGpConditionSet(200, true)
+            };
+        }
 
         var surfaceSlapConfig = GetFishingActionConfig(gbrPreset, x => x.SurfaceSlap, GatherBuddy.Config.AutoGatherConfig.EnableSurfaceSlap,
             GatherBuddy.Config.AutoGatherConfig.SurfaceSlapGPThreshold, GatherBuddy.Config.AutoGatherConfig.SurfaceSlapGPAbove);
         if (!surfaceSlapConfig.Enabled)
-            return new AHAutoSurfaceSlap(false);
-        
-        bool isTargetFish = targetFishList.Any(f => f.ItemId == fish.ItemId);
-        if (isTargetFish)
             return new AHAutoSurfaceSlap(false);
         
         bool isMoochFish = allFish.Any(f => f.Mooches.Contains(fish));
@@ -851,21 +855,13 @@ public class AutoHookPresetBuilder
             return new AHAutoSurfaceSlap(false);
         }
         
-        var targetFish = targetFishList.FirstOrDefault();
-        if (targetFish == null)
+        bool sharesBiteType = targetFishList.Any(targetFish =>
         {
-            return new AHAutoSurfaceSlap(false);
-        }
-        
-        BiteType relevantBiteType;
-        if (targetFish.Mooches.Length > 0)
-            relevantBiteType = targetFish.Mooches[0].BiteType;
-        else
-            relevantBiteType = targetFish.BiteType;
-        
-        bool sharesBiteType = fishBiteType == relevantBiteType && 
-            relevantBiteType != BiteType.Unknown && 
-            relevantBiteType != BiteType.None;
+            var relevantBiteType = targetFish.Mooches.Length > 0 ? targetFish.Mooches[0].BiteType : targetFish.BiteType;
+            return fishBiteType == relevantBiteType
+                && relevantBiteType != BiteType.Unknown
+                && relevantBiteType != BiteType.None;
+        });
         
         if (sharesBiteType)
         {
@@ -873,7 +869,10 @@ public class AutoHookPresetBuilder
                 enabled: true,
                 gpThreshold: surfaceSlapConfig.Threshold,
                 gpThresholdAbove: surfaceSlapConfig.ThresholdAbove
-            );
+            )
+            {
+                ConditionSet = CreateGpConditionSet(surfaceSlapConfig.Threshold, surfaceSlapConfig.ThresholdAbove)
+            };
         }
         
         return new AHAutoSurfaceSlap(false);
@@ -899,7 +898,10 @@ public class AutoHookPresetBuilder
             enabled: true,
             gpThreshold: identicalCastConfig.Threshold,
             gpThresholdAbove: identicalCastConfig.ThresholdAbove
-        );
+        )
+        {
+            ConditionSet = CreateGpConditionSet(identicalCastConfig.Threshold, identicalCastConfig.ThresholdAbove)
+        };
     }
 
     private static void ConfigureExtraCfg(AHCustomPresetConfig preset, uint? baitId)
