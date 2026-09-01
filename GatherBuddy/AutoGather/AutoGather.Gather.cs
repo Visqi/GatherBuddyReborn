@@ -115,7 +115,8 @@ namespace GatherBuddy.AutoGather
                     && Math.Abs(candidate.Position.Y - Player.Position.Y) < 3
                     && TryGetSpearfishingNodeState(candidate, out var state)
                     && state.RemainingCount > 0
-                    && MatchesSpearfishingSpot(expectedSpot, state))
+                    && MatchesSpearfishingSpot(expectedSpot, state)
+                    && !IsVisitedSpearfishingNode(state))
                 .MinBy(candidate => Vector3.Distance(Player.Position, candidate.Position));
             if (gameObject == null || gameObject.Address == nint.Zero)
                 return;

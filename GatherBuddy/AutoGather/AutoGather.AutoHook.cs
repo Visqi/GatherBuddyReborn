@@ -279,15 +279,23 @@ public partial class AutoGather
                 }
                 else
                 {
-                    AutoHook.SetPreset?.Invoke(_currentAutoHookPresetName);
-                    AutoHook.DeleteSelectedPreset?.Invoke();
-                    GatherBuddy.Log.Debug($"[AutoGather] Deleted GBR-generated preset '{_currentAutoHookPresetName}'");
-                    
-                    if (_currentAutoHookTargetPresetName != null)
+                    if (_currentAutoHookTarget.HasValue && _currentAutoHookTarget.Value.Fish?.IsSpearFish == true)
                     {
-                        AutoHook.SetPreset?.Invoke(_currentAutoHookTargetPresetName);
+                        GatherBuddy.Log.Warning(
+                            $"[AutoGather] Generated AutoGig preset '{_currentAutoHookPresetName}' remains in AutoHook because AutoHook does not expose AutoGig preset deletion via IPC; remove it manually from AutoHook's AutoGig presets.");
+                    }
+                    else
+                    {
+                        AutoHook.SetPreset?.Invoke(_currentAutoHookPresetName);
                         AutoHook.DeleteSelectedPreset?.Invoke();
-                        GatherBuddy.Log.Debug($"[AutoGather] Deleted GBR-generated preset '{_currentAutoHookTargetPresetName}'");
+                        GatherBuddy.Log.Debug($"[AutoGather] Deleted GBR-generated preset '{_currentAutoHookPresetName}'");
+
+                        if (_currentAutoHookTargetPresetName != null)
+                        {
+                            AutoHook.SetPreset?.Invoke(_currentAutoHookTargetPresetName);
+                            AutoHook.DeleteSelectedPreset?.Invoke();
+                            GatherBuddy.Log.Debug($"[AutoGather] Deleted GBR-generated preset '{_currentAutoHookTargetPresetName}'");
+                        }
                     }
                 }
             }

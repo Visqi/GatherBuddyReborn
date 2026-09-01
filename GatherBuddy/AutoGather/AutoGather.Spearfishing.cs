@@ -65,6 +65,9 @@ namespace GatherBuddy.AutoGather
             return baseRowId != 0 && state.BaseRowId == baseRowId;
         }
 
+        private bool IsVisitedSpearfishingNode(SpearfishingNodeState state)
+            => state.RowId != 0 && VisitedNodes.Contains(state.RowId);
+
         private unsafe bool TryGetSwimmingShadowsMarker(FishingSpot shadowSpot, out Vector3 position)
         {
             position = default;

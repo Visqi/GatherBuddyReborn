@@ -13,6 +13,7 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GatherBuddy.AutoGather.Extensions;
 using GatherBuddy.AutoGather.Helpers;
@@ -20,6 +21,7 @@ using GatherBuddy.AutoGather.Lists;
 using GatherBuddy.AutoGather.Movement;
 using GatherBuddy.Automation;
 using GatherBuddy.Classes;
+using GatherBuddy.Crafting;
 using GatherBuddy.CustomInfo;
 using GatherBuddy.Data;
 using GatherBuddy.Enums;
@@ -1873,7 +1875,8 @@ namespace GatherBuddy.AutoGather
                 ? Dalamud.Objects
                     .Where(gameObject => TryGetSpearfishingNodeState(gameObject, out var state)
                         && state.RemainingCount > 0
-                        && MatchesSpearfishingSpot(spearfishingSpot, state))
+                        && MatchesSpearfishingSpot(spearfishingSpot, state)
+                        && !IsVisitedSpearfishingNode(state))
                     .ToList()
                 : Dalamud.Objects
                     .Where(gameObject => allPositions.Contains((gameObject.BaseId, gameObject.Position)))
@@ -2222,18 +2225,32 @@ namespace GatherBuddy.AutoGather
             return true;
         }
 
-        private bool ChangeGearSet(GatheringType job, int delay)
+        private unsafe bool ChangeGearSet(GatheringType job, int delay)
         {
-            var set = job switch
+            var (preferredName, classJobId) = job switch
             {
-                GatheringType.Miner => GatherBuddy.Config.MinerSetName,
-                GatheringType.Botanist => GatherBuddy.Config.BotanistSetName,
-                GatheringType.Fisher => GatherBuddy.Config.FisherSetName,
-                _ => null,
+                GatheringType.Miner    => (GatherBuddy.Config.MinerSetName, 16u),
+                GatheringType.Botanist => (GatherBuddy.Config.BotanistSetName, 17u),
+                GatheringType.Fisher   => (GatherBuddy.Config.FisherSetName, 18u),
+                _                      => (null, 0u),
             };
-            if (string.IsNullOrEmpty(set))
+            if (classJobId == 0)
             {
-                Communicator.PrintError($"No gear set for {job} configured.");
+                Communicator.PrintError($"No job type associated with {job}.");
+                return false;
+            }
+
+            var gearsetModule = RaptureGearsetModule.Instance();
+            if (gearsetModule == null)
+            {
+                Communicator.PrintError("Could not read saved gear sets.");
+                return false;
+            }
+
+            if (!GearsetStatsReader.TryResolveExistingGearsetIndex(gearsetModule, classJobId, preferredName, out var gearsetIndex,
+                    out var gearsetName))
+            {
+                Communicator.PrintError($"No saved gear set for {job} found.");
                 return false;
             }
 
@@ -2257,7 +2274,8 @@ namespace GatherBuddy.AutoGather
             }
 
             _diademPathIndex = -1; // Reset The Diadem path after changing job
-            Chat.ExecuteCommand($"/gearset change \"{set}\"");
+            GatherBuddy.Log.Information($"[AutoGather] Switching to {job} with gearset {gearsetIndex} ({gearsetName}).");
+            gearsetModule->EquipGearset(gearsetIndex);
             TaskManager.DelayNext(Random.Shared.Next(delay, delay + 500)); // Add a random delay to be less suspicious
             return true;
         }
