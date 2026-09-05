@@ -1446,7 +1446,7 @@ public static class CraftingGameInterop
         return CraftState.InProgress;
     }
 
-    private static CraftState TransitionFromWaitFinish()
+    private static unsafe CraftState TransitionFromWaitFinish()
     {
         if (Dalamud.Conditions[ConditionFlag.ExecutingCraftingAction])
             return CraftState.WaitFinish;
@@ -1502,7 +1502,7 @@ public static class CraftingGameInterop
         return CraftState.IdleNormal;
     }
 
-    private static uint? GetRecipeIdFromUI()
+    private static unsafe uint? GetRecipeIdFromUI()
     {
         try
         {
