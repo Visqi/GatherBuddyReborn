@@ -249,7 +249,8 @@ public static class CraftingGatherBridge
             _gatherList = new AutoGatherList()
             {
                 Name = "Crafting Materials (Auto-Generated)",
-                Enabled = true
+                Enabled = true,
+                UsesRetainerInventory = false
             };
 
             foreach (var (itemId, quantity) in missing)
