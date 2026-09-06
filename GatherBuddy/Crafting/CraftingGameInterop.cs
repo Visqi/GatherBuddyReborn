@@ -16,6 +16,9 @@ namespace GatherBuddy.Crafting;
 public static class CraftingGameInterop
 {
     private static readonly TimeSpan QuickSynthesisStartTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan QuickSynthesisCloseRetryDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan QuickSynthesisCloseTimeout = TimeSpan.FromSeconds(5);
+    private const int QuickSynthesisCloseMaxAttempts = 5;
 
     public enum CraftPreparationFailureReason
     {
@@ -71,6 +74,10 @@ public static class CraftingGameInterop
     private static int _quickSynthCompleted = 0;
     private static bool _quickSynthWindowSeen = false;
     private static DateTime _quickSynthStartRequestedAt = DateTime.MinValue;
+    private static DateTime _quickSynthCloseStartedAt = DateTime.MinValue;
+    private static DateTime _quickSynthLastCloseAttemptAt = DateTime.MinValue;
+    private static int _quickSynthCloseAttempts = 0;
+    private static bool _quickSynthCloseFailureHandled = false;
     private static Dictionary<uint, bool> _equipmentItemCache = new();
     private static Vulcan.UserMacroLibrary? _userMacroLibrary = null;
     private static string? _currentSelectedMacroId = null;
@@ -210,13 +217,41 @@ public static class CraftingGameInterop
         _lastPreparationFailure = null;
         return true;
     }
+
+    public static void CancelCurrentCraft()
+    {
+        var previousState = _currentState;
+        GatherBuddy.AutoGather?.TaskManager.Abort();
+        ResetQuickSynthesisState();
+        _currentRecipe = null;
+        _currentRecipeId = null;
+        _vulcanCraftState = null;
+        _vulcanStepState = null;
+        _currentQualityPolicy = null;
+        _currentIngredientPreferences = null;
+        _currentUseAllNQ = false;
+        _currentSelectedMacroId = null;
+        _taskManagerIdleSince = DateTime.MinValue;
+        _nextActionAllowedAt = DateTime.MinValue;
+        _lastPreparationFailure = null;
+        CraftingProcessor.Dispose();
+        var nextState = Dalamud.Conditions[ConditionFlag.Crafting]
+                     || Dalamud.Conditions[ConditionFlag.PreparingToCraft]
+                     || Dalamud.Conditions[ConditionFlag.ExecutingCraftingAction]
+            ? CraftState.InvalidState
+            : CraftState.IdleNormal;
+        _currentState = nextState;
+
+        if (previousState != nextState)
+            StateChanged?.Invoke(nextState);
+    }
     
     public static void StartCraft(Recipe recipe, uint quantity, bool useQuickSynthesis = false)
     {
         if (recipe.RowId == 0)
             return;
 
-        _quickSynthStartRequestedAt = DateTime.MinValue;
+        ResetQuickSynthesisState();
         _currentRecipe = recipe;
         _currentRecipeId = recipe.RowId;
         _currentState = CraftState.PreparingCraft;
@@ -1143,6 +1178,13 @@ public static class CraftingGameInterop
         if (_quickSynthStartRequestedAt != DateTime.MinValue)
             return TransitionFromPreparingQuickSynthesis();
 
+        var tm = GatherBuddy.AutoGather?.TaskManager;
+        if (tm != null && tm.IsBusy)
+        {
+            _taskManagerIdleSince = DateTime.MinValue;
+            return CraftState.PreparingCraft;
+        }
+
         if (Dalamud.Conditions[ConditionFlag.ExecutingCraftingAction])
         {
             _taskManagerIdleSince = DateTime.MinValue;
@@ -1155,8 +1197,7 @@ public static class CraftingGameInterop
             return CraftState.IdleBetween;
         }
 
-        var tm = GatherBuddy.AutoGather?.TaskManager;
-        if (tm != null && !tm.IsBusy)
+        if (tm != null)
         {
             if (_taskManagerIdleSince == DateTime.MinValue)
                 _taskManagerIdleSince = DateTime.Now;
@@ -1207,10 +1248,18 @@ public static class CraftingGameInterop
         _quickSynthCompleted = 0;
         _quickSynthWindowSeen = false;
         _quickSynthStartRequestedAt = DateTime.MinValue;
+        _quickSynthCloseStartedAt = DateTime.MinValue;
+        _quickSynthLastCloseAttemptAt = DateTime.MinValue;
+        _quickSynthCloseAttempts = 0;
+        _quickSynthCloseFailureHandled = false;
     }
 
     private static unsafe CraftState TransitionFromQuickSynthesis()
     {
+        if (_quickSynthWindowSeen && Dalamud.Conditions[ConditionFlag.PreparingToCraft])
+            return CompleteQuickSynthesis();
+
+        var now = DateTime.Now;
         var quickSynthAddon = Dalamud.GameGui.GetAddonByName("SynthesisSimple");
         
         if (quickSynthAddon != null && quickSynthAddon.Address != nint.Zero)
@@ -1232,8 +1281,20 @@ public static class CraftingGameInterop
                 
                 if (current >= max && max > 0)
                 {
-                    GatherBuddy.Log.Debug($"[Crafting] Quick synthesis complete ({current}/{max}), closing window");
-                    Callback.Fire(atkUnit, true, -1);
+                    if (_quickSynthCloseStartedAt == DateTime.MinValue)
+                        _quickSynthCloseStartedAt = now;
+
+                    if (atkUnit->IsReady
+                     && _quickSynthCloseAttempts < QuickSynthesisCloseMaxAttempts
+                     && (_quickSynthLastCloseAttemptAt == DateTime.MinValue || now - _quickSynthLastCloseAttemptAt >= QuickSynthesisCloseRetryDelay))
+                    {
+                        _quickSynthCloseAttempts++;
+                        _quickSynthLastCloseAttemptAt = now;
+                        GatherBuddy.Log.Debug($"[Crafting] Quick synthesis complete ({current}/{max}), closing window (attempt {_quickSynthCloseAttempts}/{QuickSynthesisCloseMaxAttempts})");
+                        Callback.Fire(atkUnit, true, -1);
+                    }
+
+                    HandleQuickSynthesisCloseTimeout(now);
                     return CraftState.QuickSynthesis;
                 }
                 
@@ -1242,26 +1303,38 @@ public static class CraftingGameInterop
         }
         
         if (!_quickSynthWindowSeen)
-        {
             return CraftState.QuickSynthesis;
-        }
-        
-        if (Dalamud.Conditions[ConditionFlag.PreparingToCraft])
-        {
-            GatherBuddy.Log.Debug("[Crafting] Quick synthesis complete, back in crafting menu");
-            var finishedRecipe = _currentRecipe;
-            ResetQuickSynthesisState();
-            _currentQualityPolicy = null;
-            _currentIngredientPreferences = null;
-            _currentUseAllNQ = false;
-            _currentSelectedMacroId = null;
-            _currentRecipe = null;
-            _currentRecipeId = null;
-            CraftFinished?.Invoke(finishedRecipe, false);
-            return CraftState.IdleBetween;
-        }
-        
+
+        HandleQuickSynthesisCloseTimeout(now);
         return CraftState.QuickSynthesis;
+    }
+
+    private static void HandleQuickSynthesisCloseTimeout(DateTime now)
+    {
+        if (_quickSynthCloseStartedAt == DateTime.MinValue
+         || _quickSynthCloseFailureHandled
+         || now - _quickSynthCloseStartedAt < QuickSynthesisCloseTimeout)
+            return;
+
+        _quickSynthCloseFailureHandled = true;
+        var pauseReason = "Quick Synthesis completed, but its window did not close automatically. Close the Quick Synthesis window, then resume the queue.";
+        GatherBuddy.Log.Warning($"[Crafting] Quick synthesis exit was not acknowledged within {QuickSynthesisCloseTimeout.TotalSeconds:0} seconds. {pauseReason}");
+        CraftingGatherBridge.PauseQueue(pauseReason);
+    }
+
+    private static CraftState CompleteQuickSynthesis()
+    {
+        GatherBuddy.Log.Debug("[Crafting] Quick synthesis complete, back in crafting menu");
+        var finishedRecipe = _currentRecipe;
+        ResetQuickSynthesisState();
+        _currentQualityPolicy = null;
+        _currentIngredientPreferences = null;
+        _currentUseAllNQ = false;
+        _currentSelectedMacroId = null;
+        _currentRecipe = null;
+        _currentRecipeId = null;
+        CraftFinished?.Invoke(finishedRecipe, false);
+        return CraftState.IdleBetween;
     }
     
     private static CraftState TransitionFromIdleBetween()
